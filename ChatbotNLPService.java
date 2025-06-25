@@ -7,24 +7,13 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
-import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.logging.Level;
-import java.util.logging.Logger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 import opennlp.tools.chunker.ChunkerME;
 import opennlp.tools.chunker.ChunkerModel;
@@ -39,38 +28,35 @@ import opennlp.tools.tokenize.TokenizerME;
 import opennlp.tools.tokenize.TokenizerModel;
 import opennlp.tools.util.Span;
 
-/**
- * Advanced NLP Service for Chatbot using Apache OpenNLP
- * Handles intent detection, entity extraction, and query parsing
- *
- * @author Ben
- * @version 2.0.0
- */
 public class ChatbotNLPService {
-
-    private static final Logger LOGGER = Logger.getLogger(ChatbotNLPService.class.getName());
-    private static volatile ChatbotNLPService instance;
-
-    // OpenNLP Models
+    private static final String MODEL_BASE_PATH =
+                "C:\\JDeveloper\\mywork\\BCCTChatBot\\BCCTChatBotUI\\public_html\\models\\";
+    // NLP Models
     private TokenizerME tokenizer;
-    private POSTaggerME posTagger;
     private SentenceDetectorME sentenceDetector;
+    private POSTaggerME posTagger;
     private NameFinderME personNameFinder;
     private NameFinderME organizationNameFinder;
     private NameFinderME locationNameFinder;
     private ChunkerME chunker;
     private DictionaryLemmatizer lemmatizer;
-
-    // Configuration Constants
-    private static final String MODEL_BASE_PATH =
-        "C:\\JDeveloper\\mywork\\BCCTChatBot\\BCCTChatBotUI\\src\\com\\ben\\view\\service\\models\\";
-    private static final int MAX_CACHE_SIZE = 1000;
-    private static final int MAX_INPUT_LENGTH = 1000;
-    private static final double MIN_CONFIDENCE_THRESHOLD = 0.1;
-
-    // Model file mappings
-    private static final Map<String, String> MODEL_FILES;
-    static {
+    
+    // Pattern matchers
+    private static final Pattern CONTRACT_PATTERN = Pattern.compile("\\b[A-Z]{2,3}\\d{3,6}\\b");
+    private static final Pattern PART_PATTERN = Pattern.compile("\\b[A-Z]{2}\\d{3,6}\\b");
+    private static final Pattern ACCOUNT_PATTERN = Pattern.compile("\\b\\d{8,10}\\b");
+    
+    // Intent keywords
+    private Map<String, Set<String>> intentKeywords;
+    private Map<String, String> commonTypos;
+    
+    public ChatbotNLPService() {
+        initializeModels();
+        initializeIntentKeywords();
+        initializeTypoCorrections();
+    }
+    
+    private void initializeModels() {
         Map<String, String> modelFiles = new HashMap<>();
         modelFiles.put("tokenizer", "en-token.bin");
         modelFiles.put("pos", "en-pos-maxent.bin");
@@ -80,1428 +66,619 @@ public class ChatbotNLPService {
         modelFiles.put("location", "en-ner-location.bin");
         modelFiles.put("chunker", "en-chunker.bin");
         modelFiles.put("lemmatizer", "en-lemmatizer.txt");
-        MODEL_FILES = Collections.unmodifiableMap(modelFiles);
-    }
-
-
-    // Cache and Performance Tracking
-    private final Map<String, ParsedQuery> queryCache = new ConcurrentHashMap<>();
-    private final Map<String, Long> processingTimes = new ConcurrentHashMap<>();
-    private final AtomicLong totalQueries = new AtomicLong(0);
-    private final AtomicLong cacheHits = new AtomicLong(0);
-
-    // Configuration Maps
-    private final Map<String, Double> intentConfidenceThresholds;
-    private final Map<String, List<String>> intentKeywords;
-    private final Map<String, String> spellingCorrections;
-    private final Map<String, List<Pattern>> intentPatterns;
-    private final Set<String> stopWords;
-
-    /**
-     * Private constructor for singleton pattern
-     */
-    private ChatbotNLPService() {
-        LOGGER.info("Initializing ChatbotNLPService...");
-
-        this.intentConfidenceThresholds = initializeConfidenceThresholds();
-        this.intentKeywords = initializeIntentKeywords();
-        this.spellingCorrections = initializeSpellingCorrections();
-        this.intentPatterns = initializeIntentPatterns();
-        this.stopWords = initializeStopWords();
-
-        initializeOpenNLPModels();
-
-        LOGGER.info("ChatbotNLPService initialization completed");
-    }
-
-    /**
-     * Thread-safe singleton instance getter
-     */
-    public static ChatbotNLPService getInstance() {
-        if (instance == null) {
-            synchronized (ChatbotNLPService.class) {
-                if (instance == null) {
-                    instance = new ChatbotNLPService();
-                }
-            }
-        }
-        return instance;
-    }
-
-    /**
-     * Main method to parse user query with comprehensive processing
-     */
-    public ParsedQuery parseQuery(String input) {
-        long startTime = System.currentTimeMillis();
-        totalQueries.incrementAndGet();
-
+        
         try {
-            // Input validation
-            if (input == null || input.trim().isEmpty()) {
-                return createErrorResponse("Input cannot be empty", input);
-            }
-
-            if (input.length() > MAX_INPUT_LENGTH) {
-                return createErrorResponse("Input too long. Maximum " + MAX_INPUT_LENGTH + " characters allowed",
-                                           input);
-            }
-
-            // Check cache first
-            String cacheKey = generateCacheKey(input);
-            ParsedQuery cachedResult = queryCache.get(cacheKey);
-            if (cachedResult != null) {
-                cacheHits.incrementAndGet();
-                LOGGER.fine("Cache hit for query: " + input.substring(0, Math.min(50, input.length())));
-                return cachedResult;
-            }
-
-            // Process the query
-            ParsedQuery result = processQueryInternal(input);
-
-            // Cache the result
-            cacheQuery(cacheKey, result);
-
-            // Record processing time
-            long processingTime = System.currentTimeMillis() - startTime;
-            processingTimes.put(result.getIntent(), processingTime);
-
-            LOGGER.fine(String.format("Query processed in %dms: %s -> %s (%.2f)", processingTime,
-                                      input.substring(0, Math.min(30, input.length())), result.getIntent(),
-                                      result.getConfidence()));
-
-            return result;
-
+            // Load tokenizer
+            TokenizerModel tokenizerModel = new TokenizerModel(getModelInputStream(modelFiles.get("tokenizer")));
+            tokenizer = new TokenizerME(tokenizerModel);
+            
+            // Load sentence detector
+            SentenceModel sentenceModel = new SentenceModel(getModelInputStream(modelFiles.get("sentence")));
+            sentenceDetector = new SentenceDetectorME(sentenceModel);
+            
+            // Load POS tagger
+            POSModel posModel = new POSModel(getModelInputStream(modelFiles.get("pos")));
+            posTagger = new POSTaggerME(posModel);
+            
+            // Load NER models
+            TokenNameFinderModel personModel = new TokenNameFinderModel(getModelInputStream(modelFiles.get("person")));
+            personNameFinder = new NameFinderME(personModel);
+            
+            TokenNameFinderModel orgModel = new TokenNameFinderModel(getModelInputStream(modelFiles.get("organization")));
+            organizationNameFinder = new NameFinderME(orgModel);
+            
+            TokenNameFinderModel locModel = new TokenNameFinderModel(getModelInputStream(modelFiles.get("location")));
+            locationNameFinder = new NameFinderME(locModel);
+            
+            // Load chunker
+            ChunkerModel chunkerModel = new ChunkerModel(getModelInputStream(modelFiles.get("chunker")));
+            chunker = new ChunkerME(chunkerModel);
+            
+            // Load lemmatizer-getModelInputStream(modelFiles.get("lemmatizer")));
+            lemmatizer = new DictionaryLemmatizer(getModelInputStream(modelFiles.get("lemmatizer")));
+            
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to load NLP models", e);
+        }
+    }
+    
+    private void initializeIntentKeywords() {
+        intentKeywords = new HashMap<>();
+        
+        // Contract keywords
+        intentKeywords.put("CONTRACT_INFO", new HashSet<>(Arrays.asList(
+            "show", "contract", "details", "info", "find", "get", "display"
+        )));
+        
+        // Parts keywords
+        intentKeywords.put("PARTS_INFO", new HashSet<>(Arrays.asList(
+            "parts", "part", "specifications", "spec", "datasheet", "compatible", 
+            "stock", "lead", "time", "manufacturer", "issues", "defects", "warranty",
+            "active", "discontinued"
+        )));
+        
+        // Status keywords
+        intentKeywords.put("STATUS_CHECK", new HashSet<>(Arrays.asList(
+            "status", "expired", "active", "check", "state"
+        )));
+        
+        // Customer keywords
+        intentKeywords.put("CUSTOMER_INFO", new HashSet<>(Arrays.asList(
+            "customer", "account", "boeing", "honeywell", "client"
+        )));
+        
+        // Help keywords
+        intentKeywords.put("HELP_CREATE", new HashSet<>(Arrays.asList(
+            "create", "help", "how", "new", "make"
+        )));
+        
+        // Failed parts keywords
+        intentKeywords.put("FAILED_PARTS", new HashSet<>(Arrays.asList(
+            "failed", "failure", "error", "defective", "broken"
+        )));
+    }
+    
+    private void initializeTypoCorrections() {
+        commonTypos = new HashMap<>();
+        commonTypos.put("cntrs", "contracts");
+        commonTypos.put("cntr", "contract");
+        commonTypos.put("shw", "show");
+        commonTypos.put("contarct", "contract");
+        commonTypos.put("contacrt", "contract");
+        commonTypos.put("pasrt", "part");
+        commonTypos.put("parst", "part");
+        commonTypos.put("filed", "failed");
+        commonTypos.put("crate", "create");
+        commonTypos.put("contarctNume", "contract number");
+    }
+    
+    public String processQuery(String userInput) {
+        try {
+            ParsedQuery parsedQuery = parseQuery(userInput);
+            return executeQuery(parsedQuery);
         } catch (Exception e) {
-            LOGGER.log(Level.SEVERE, "Error processing query: " + input, e);
-            return createErrorResponse("Error processing query: " + e.getMessage(), input);
+            return "I'm sorry, I encountered an error processing your request: " + e.getMessage();
         }
     }
-
-    /**
-     * Internal query processing logic
-     */
-    private ParsedQuery processQueryInternal(String input) {
-        // Step 1: Preprocessing
-        String normalizedInput = preprocessInput(input);
-
-        // Step 2: Sentence detection
-        String[] sentences = detectSentences(normalizedInput);
-
-        // Step 3: Process each sentence
-        List<ProcessedSentence> processedSentences = new ArrayList<>();
-        for (String sentence : sentences) {
-            if (!sentence.trim().isEmpty()) {
-                processedSentences.add(processSentence(sentence));
-            }
-        }
-
-        // Step 4: Intent detection and entity extraction
-        String intent = determineIntent(processedSentences, normalizedInput);
-        Map<String, List<String>> entities = combineEntities(processedSentences);
-        double confidence = calculateConfidence(processedSentences, intent, normalizedInput);
-
-        // Step 5: Post-processing and validation
-        intent = validateAndRefineIntent(intent, entities, confidence);
-        entities = cleanAndValidateEntities(entities);
-
-        // Step 6: Create comprehensive response
-        ParsedQuery result = createParsedQuery(intent, confidence, entities, normalizedInput, input);
-        enrichParsedQuery(result, processedSentences);
-
-        return result;
-    }
-
-    /**
-     * Initialize all OpenNLP models with comprehensive error handling
-     */
-    private void initializeOpenNLPModels() {
-        Map<String, Boolean> loadStatus = new HashMap<>();
-
-        LOGGER.info("Loading OpenNLP models...");
-
-        // Load core models
-        loadStatus.put("tokenizer", loadTokenizer());
-        loadStatus.put("pos", loadPOSTagger());
-        loadStatus.put("sentence", loadSentenceDetector());
-        loadStatus.put("chunker", loadChunker());
-
-        // Load NER models
-        loadStatus.put("person", loadPersonNameFinder());
-        loadStatus.put("organization", loadOrganizationNameFinder());
-        loadStatus.put("location", loadLocationNameFinder());
-
-        // Load lemmatizer
-        loadStatus.put("lemmatizer", loadLemmatizer());
-
-        // Log loading results
-        long successCount = loadStatus.values()
-                                      .stream()
-                                      .mapToLong(b -> b ? 1 : 0)
-                                      .sum();
-        LOGGER.info(String.format("Loaded %d/%d OpenNLP models successfully", successCount, loadStatus.size()));
-
-        // Log individual model status
-        loadStatus.forEach((model, loaded) -> { LOGGER.info(String.format("Model %s: %s", model,
-                                                                          loaded ? "LOADED" : "FAILED")); });
-
-        if (successCount == 0) {
-            LOGGER.warning("No OpenNLP models loaded. Using fallback processing only.");
-        }
-    }
-
-    /**
-     * Load tokenizer model
-     */
-    private boolean loadTokenizer() {
-        try (InputStream modelIn = getModelInputStream("tokenizer")) {
-            if (modelIn != null) {
-                TokenizerModel model = new TokenizerModel(modelIn);
-                this.tokenizer = new TokenizerME(model);
-                return true;
-            }
-        } catch (IOException e) {
-            LOGGER.log(Level.WARNING, "Failed to load tokenizer model", e);
-        }
-        return false;
-    }
-
-    /**
-     * Load POS tagger model
-     */
-    private boolean loadPOSTagger() {
-        try (InputStream modelIn = getModelInputStream("pos")) {
-            if (modelIn != null) {
-                POSModel model = new POSModel(modelIn);
-                this.posTagger = new POSTaggerME(model);
-                return true;
-            }
-        } catch (IOException e) {
-            LOGGER.log(Level.WARNING, "Failed to load POS tagger model", e);
-        }
-        return false;
-    }
-
-    /**
-     * Load sentence detector model
-     */
-    private boolean loadSentenceDetector() {
-        try (InputStream modelIn = getModelInputStream("sentence")) {
-            if (modelIn != null) {
-                SentenceModel model = new SentenceModel(modelIn);
-                this.sentenceDetector = new SentenceDetectorME(model);
-                return true;
-            }
-        } catch (IOException e) {
-            LOGGER.log(Level.WARNING, "Failed to load sentence detector model", e);
-        }
-        return false;
-    }
-
-    /**
-     * Load chunker model
-     */
-    private boolean loadChunker() {
-        try (InputStream modelIn = getModelInputStream("chunker")) {
-            if (modelIn != null) {
-                ChunkerModel model = new ChunkerModel(modelIn);
-                this.chunker = new ChunkerME(model);
-                return true;
-            }
-        } catch (IOException e) {
-            LOGGER.log(Level.WARNING, "Failed to load chunker model", e);
-        }
-        return false;
-    }
-
-    /**
-     * Load person name finder model
-     */
-    private boolean loadPersonNameFinder() {
-        try (InputStream modelIn = getModelInputStream("person")) {
-            if (modelIn != null) {
-                TokenNameFinderModel model = new TokenNameFinderModel(modelIn);
-                this.personNameFinder = new NameFinderME(model);
-                return true;
-            }
-        } catch (IOException e) {
-            LOGGER.log(Level.WARNING, "Failed to load person name finder model", e);
-        }
-        return false;
-    }
-
-    /**
-     * Load organization name finder model
-     */
-    private boolean loadOrganizationNameFinder() {
-        try (InputStream modelIn = getModelInputStream("organization")) {
-            if (modelIn != null) {
-                TokenNameFinderModel model = new TokenNameFinderModel(modelIn);
-                this.organizationNameFinder = new NameFinderME(model);
-                return true;
-            }
-        } catch (IOException e) {
-            LOGGER.log(Level.WARNING, "Failed to load organization name finder model", e);
-        }
-        return false;
-    }
-
-    /**
-     * Load location name finder model
-     */
-    private boolean loadLocationNameFinder() {
-        try (InputStream modelIn = getModelInputStream("location")) {
-            if (modelIn != null) {
-                TokenNameFinderModel model = new TokenNameFinderModel(modelIn);
-                this.locationNameFinder = new NameFinderME(model);
-                return true;
-            }
-        } catch (IOException e) {
-            LOGGER.log(Level.WARNING, "Failed to load location name finder model", e);
-        }
-        return false;
-    }
-
-    /**
-     * Load lemmatizer
-     */
-    private boolean loadLemmatizer() {
-        try (InputStream dictIn = getModelInputStream("lemmatizer")) {
-            if (dictIn != null) {
-                this.lemmatizer = new DictionaryLemmatizer(dictIn);
-                return true;
-            }
-        } catch (IOException e) {
-            LOGGER.log(Level.WARNING, "Failed to load lemmatizer dictionary", e);
-        }
-        return false;
-    }
-
-    /**
-     * Get model input stream
-     */
-
-
-    //    private InputStream getModelInputStream(String modelKey) {
-    //        String fileName = MODEL_FILES.get(modelKey);
-    //        System.out.println("File Name-------------->"+fileName);
-    //
-    //        if (fileName != null) {
-    //            try {
-    //                String fullPath = MODEL_BASE_PATH + fileName;
-    //                System.out.println("Full path: " + fullPath);
-    //
-    //                File modelFile = new File(fullPath);
-    //                if (modelFile.exists()) {
-    //                    return new FileInputStream(modelFile);
-    //                } else {
-    //                    System.err.println("Model file does not exist: " + fullPath);
-    //                }
-    //            } catch (FileNotFoundException e) {
-    //                System.err.println("Dobbinddi---------Error loading model file: " + e.getMessage());
-    //            }
-    //        }
-    //        return null;
-    //    }
-    private InputStream getModelInputStream(String modelKey) {
-        String fileName = MODEL_FILES.get(modelKey);
-
-        if (fileName != null) {
-            try {
-                String fullPath = MODEL_BASE_PATH + fileName;
-                File modelFile = new File(fullPath);
-                System.out.println("=== Diagnosing: " + fileName + " ===");
-                System.out.println("Exists: " + modelFile.exists());
-                System.out.println("Size: " + modelFile.length() + " bytes");
-                System.out.println("Readable: " + modelFile.canRead());
-                // Verify file before opening
-                if (!modelFile.exists()) {
-                    System.err.println("File does not exist: " + fullPath);
-                    return null;
-                }
-
-                if (!modelFile.canRead()) {
-                    System.err.println("Cannot read file: " + fullPath);
-                    return null;
-                }
-
-                if (modelFile.length() == 0) {
-                    System.err.println("File is empty: " + fullPath);
-                    return null;
-                }
-
-                // This is completely safe - just reading
-                return new FileInputStream(modelFile);
-
-            } catch (Exception e) {
-                System.err.println("Error opening file: " + e.getMessage());
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Enhanced preprocessing with comprehensive text normalization
-     */
-    private String preprocessInput(String input) {
-        String processed = input.trim();
-
-        // Convert to lowercase for processing (preserve original case in entities)
-        String lowerProcessed = processed.toLowerCase();
-
-        // Apply spelling corrections
-        for (Map.Entry<String, String> correction : spellingCorrections.entrySet()) {
-            lowerProcessed =
-                lowerProcessed.replaceAll("(?i)\\b" + Pattern.quote(correction.getKey()) + "\\b",
-                                          correction.getValue());
-        }
-
-        // Normalize contract number formats
-        lowerProcessed = lowerProcessed.replaceAll("contract\\s*#\\s*(\\d+)", "contract $1");
-        lowerProcessed = lowerProcessed.replaceAll("#(\\d{6})", "contract $1");
-        lowerProcessed = lowerProcessed.replaceAll("contract(\\d{6,8})", "contract $1");
-
-        // Normalize common abbreviations
-        lowerProcessed = lowerProcessed.replaceAll("\\binfo\\b", "information");
-        lowerProcessed = lowerProcessed.replaceAll("\\bdeets\\b", "details");
-        lowerProcessed = lowerProcessed.replaceAll("\\bu\\b", "you");
-        lowerProcessed = lowerProcessed.replaceAll("\\br\\b", "are");
-
-        // Remove extra whitespace an
-        // Remove extra whitespace and punctuation normalization
-        lowerProcessed = lowerProcessed.replaceAll("\\s+", " ");
-        lowerProcessed = lowerProcessed.replaceAll("[.!?]+", ".");
-        lowerProcessed = lowerProcessed.trim();
-
-        return lowerProcessed;
-    }
-
-    /**
-     * Detect sentences using OpenNLP or enhanced fallback
-     */
-    private String[] detectSentences(String input) {
-        if (sentenceDetector != null) {
-            return sentenceDetector.sentDetect(input);
-        } else {
-            // Enhanced fallback sentence detection
-            return Arrays.stream(input.split("[.!?]+"))
-                         .map(String::trim)
-                         .filter(s -> !s.isEmpty())
-                         .toArray(String[]::new);
-        }
-    }
-
-    /**
-     * Process individual sentence with comprehensive analysis
-     */
-    private ProcessedSentence processSentence(String sentence) {
-        // Tokenization
-        String[] tokens = tokenizeText(sentence);
-
-        // POS Tagging
-        String[] posTags = getPOSTags(tokens);
-
-        // Lemmatization
-        String[] lemmas = getLemmas(tokens, posTags);
-
-        // Chunking
-        String[] chunks = getChunks(tokens, posTags);
-
-        // Entity extraction
-        Map<String, List<String>> entities = extractEntities(tokens, sentence);
-
-        // Key phrase extraction
-        List<String> keyPhrases = extractSentenceKeyPhrases(tokens, posTags, chunks);
-
-        return new ProcessedSentence(tokens, posTags, lemmas, chunks, entities, keyPhrases, sentence);
-    }
-
-    /**
-     * Enhanced tokenization
-     */
-    private String[] tokenizeText(String text) {
-        if (tokenizer != null) {
-            return tokenizer.tokenize(text);
-        } else {
-            // Enhanced fallback tokenization
-            return text.toLowerCase()
-                       .replaceAll("[^a-zA-Z0-9\\s]", " ")
-                       .trim()
-                       .split("\\s+");
-        }
-    }
-
-    /**
-     * Get POS tags with fallback
-     */
-    private String[] getPOSTags(String[] tokens) {
-        if (posTagger != null) {
-            return posTagger.tag(tokens);
-        } else {
-            // Enhanced fallback POS tagging
-            return Arrays.stream(tokens)
-                         .map(this::getFallbackPOSTag)
-                         .toArray(String[]::new);
-        }
-    }
-
-    /**
-     * Get lemmas for tokens
-     */
-    private String[] getLemmas(String[] tokens, String[] posTags) {
-        if (lemmatizer != null) {
-            return lemmatizer.lemmatize(tokens, posTags);
-        } else {
-            // Simple fallback - return tokens as-is
-            return Arrays.copyOf(tokens, tokens.length);
-        }
-    }
-
-    /**
-     * Get chunks for tokens
-     */
-    private String[] getChunks(String[] tokens, String[] posTags) {
-        if (chunker != null) {
-            return chunker.chunk(tokens, posTags);
-        } else {
-            // Simple fallback chunking
-            String[] chunks = new String[tokens.length];
-            Arrays.fill(chunks, "O");
-            return chunks;
-        }
-    }
-
-    /**
-     * Fallback POS tagging logic
-     */
-    private String getFallbackPOSTag(String token) {
-        if (token.matches("\\d+"))
-            return "CD"; // Cardinal number
-        if (token.matches(".*ing"))
-            return "VBG"; // Gerund
-        if (token.matches(".*ed"))
-            return "VBD"; // Past tense verb
-        if (token.matches(".*ly"))
-            return "RB"; // Adverb
-        if (Character.isUpperCase(token.charAt(0)))
-            return "NNP"; // Proper noun
-        if (Arrays.asList("the", "a", "an").contains(token.toLowerCase()))
-            return "DT"; // Determiner
-        if (Arrays.asList("show", "get", "find", "tell", "give").contains(token.toLowerCase()))
-            return "VB"; // Verb
-        return "NN"; // Default to noun
-    }
-
-    /**
-     * Comprehensive entity extraction
-     */
-    private Map<String, List<String>> extractEntities(String[] tokens, String originalSentence) {
-        Map<String, List<String>> entities = new HashMap<>();
-
-        // Initialize entity lists
-        entities.put("contractNumbers", extractContractNumbers(originalSentence));
-        entities.put("customerNames", extractPersonNames(tokens));
-        entities.put("organizationNames", extractOrganizationNames(tokens));
-        entities.put("locations", extractLocationNames(tokens));
-        entities.put("actions", extractActionWords(tokens));
-        entities.put("accountNumbers", extractAccountNumbers(originalSentence));
-        entities.put("userNames", extractUserNames(originalSentence));
-        entities.put("dates", extractDates(originalSentence));
-        entities.put("phoneNumbers", extractPhoneNumbers(originalSentence));
-        entities.put("emails", extractEmails(originalSentence));
-
-        return entities;
-    }
-
-    /**
-     * Enhanced contract number extraction with validation
-     */
-    private List<String> extractContractNumbers(String text) {
-        List<String> contractNumbers = new ArrayList<>();
-
-        String[] patterns = {
-            "(?:contract\\s+(?:number\\s+)?)(\\d{6,8})", "(?:agreement\\s+(?:number\\s+)?)(\\d{6,8})",
-            "(?:deal\\s+(?:number\\s+)?)(\\d{6,8})", "(?:policy\\s+(?:number\\s+)?)(\\d{6,8})",
-            "(?:^|\\s)(\\d{6})(?=\\s|$)", "(?:contract\\s+id\\s+)(\\d{6,8})", "(?:ref\\s+(?:number\\s+)?)(\\d{6,8})",
-            "(?:contract#)(\\d{6,8})", "(?:contract)(\\d{6,8})", // Handle contractXXXXXX format
-            "(?:info\\s+)(\\d{6,8})", // Handle "info 123456"
-            "(?:details\\s+)(\\d{6,8})" // Handle "details 123456"
-
-        };
-
-        for (String patternStr : patterns) {
-            Pattern pattern = Pattern.compile(patternStr, Pattern.CASE_INSENSITIVE);
-            Matcher matcher = pattern.matcher(text);
-            while (matcher.find()) {
-                String number = matcher.group(1);
-                if (isValidContractNumber(number) && !contractNumbers.contains(number)) {
-                    contractNumbers.add(number);
-                }
-            }
-        }
-
-        return contractNumbers;
-    }
-
-    /**
-     * Extract person names using OpenNLP NER
-     */
-    private List<String> extractPersonNames(String[] tokens) {
-        List<String> names = new ArrayList<>();
-
-        if (personNameFinder != null) {
-            Span[] spans = personNameFinder.find(tokens);
-
-            for (Span span : spans) {
-                StringBuilder name = new StringBuilder();
-                for (int i = span.getStart(); i < span.getEnd(); i++) {
-                    name.append(tokens[i]).append(" ");
-                }
-                String fullName = name.toString().trim();
-                if (isValidPersonName(fullName)) {
-                    names.add(fullName);
-                }
-            }
-
-            personNameFinder.clearAdaptiveData();
-        } else {
-            // Enhanced fallback person name detection
-            names.addAll(extractPersonNamesFallback(tokens));
-        }
-
-        return names;
-    }
-
-    /**
-     * Extract organization names
-     */
-    private List<String> extractOrganizationNames(String[] tokens) {
-        List<String> organizations = new ArrayList<>();
-
-        if (organizationNameFinder != null) {
-            Span[] spans = organizationNameFinder.find(tokens);
-
-            for (Span span : spans) {
-                StringBuilder org = new StringBuilder();
-                for (int i = span.getStart(); i < span.getEnd(); i++) {
-                    org.append(tokens[i]).append(" ");
-                }
-                organizations.add(org.toString().trim());
-            }
-
-            organizationNameFinder.clearAdaptiveData();
-        }
-
-        return organizations;
-    }
-
-    /**
-     * Extract location names
-     */
-    private List<String> extractLocationNames(String[] tokens) {
-        List<String> locations = new ArrayList<>();
-
-        if (locationNameFinder != null) {
-            Span[] spans = locationNameFinder.find(tokens);
-
-            for (Span span : spans) {
-                StringBuilder location = new StringBuilder();
-                for (int i = span.getStart(); i < span.getEnd(); i++) {
-                    location.append(tokens[i]).append(" ");
-                }
-                locations.add(location.toString().trim());
-            }
-
-            locationNameFinder.clearAdaptiveData();
-        }
-
-        return locations;
-    }
-
-
-    /**
-     * Enhanced action word extraction
-     */
-    private List<String> extractActionWords(String[] tokens) {
-        List<String> actions = new ArrayList<>();
-        Set<String> actionKeywords =
-            Collections.unmodifiableSet(new HashSet<>(Arrays.asList("show", "get", "find", "details", "info", "view",
-                                                                    "display", "tell", "give", "provide", "retrieve",
-                                                                    "fetch", "lookup", "check", "examine", "review",
-                                                                    "see", "access", "pull", "what", "how", "where",
-                                                                    "when", "which", "who", "data", "information",
-                                                                    "content", "summary", "overview", "have", "contain",
-                                                                    "include", "say", "state", "need", "want", "create",
-                                                                    "update", "modify", "delete", "remove", "add",
-                                                                    "search", "query", "list", "browse", "explore")));
-
-        for (String token : tokens) {
-            String lowerToken = token.toLowerCase();
-            if (actionKeywords.contains(lowerToken) && !actions.contains(lowerToken)) {
-                actions.add(lowerToken);
-            }
-        }
-
-        return actions;
-    }
-
-    /**
-     * Extract account numbers with enhanced patterns
-     */
-    private List<String> extractAccountNumbers(String text) {
-        List<String> accountNumbers = new ArrayList<>();
-
-        String[] patterns = {
-            "(?:account\\s+(?:number\\s+)?)(\\d{8,12})", "(?:acc\\s+(?:no\\s+)?)(\\d{8,12})",
-            "(?:account\\s+id\\s+)(\\d{8,12})", "(?:customer\\s+(?:number\\s+)?)(\\d{8,12})"
-        };
-
-        for (String patternStr : patterns) {
-            Pattern pattern = Pattern.compile(patternStr, Pattern.CASE_INSENSITIVE);
-            Matcher matcher = pattern.matcher(text);
-            while (matcher.find()) {
-                String number = matcher.group(1);
-                if (isValidAccountNumber(number)) {
-                    accountNumbers.add(number);
-                }
-            }
-        }
-
-        return accountNumbers;
-    }
-
-    /**
-     * Extract user names with enhanced patterns
-     */
-    private List<String> extractUserNames(String text) {
-        List<String> userNames = new ArrayList<>();
-
-        String[] patterns = {
-            "(?:user\\s+(?:name\\s+)?)(\\w+)", "(?:username\\s+)(\\w+)", "(?:user\\s+)(\\w+)",
-            "(?:employee\\s+(?:id\\s+)?)(\\w+)", "(?:staff\\s+(?:id\\s+)?)(\\w+)"
-        };
-
-        for (String patternStr : patterns) {
-            Pattern pattern = Pattern.compile(patternStr, Pattern.CASE_INSENSITIVE);
-            Matcher matcher = pattern.matcher(text);
-            while (matcher.find()) {
-                String userName = matcher.group(1);
-                if (isValidUserName(userName)) {
-                    userNames.add(userName);
-                }
-            }
-        }
-
-        return userNames;
-    }
-
-    /**
-     * Extract dates
-     */
-    private List<String> extractDates(String text) {
-        List<String> dates = new ArrayList<>();
-
-        String[] patterns = {
-            "\\b(\\d{1,2}[/-]\\d{1,2}[/-]\\d{2,4})\\b", "\\b(\\d{4}[/-]\\d{1,2}[/-]\\d{1,2})\\b",
-            "\\b((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\\s+\\d{1,2},?\\s+\\d{4})\\b",
-            "\\b(\\d{1,2}\\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\\s+\\d{4})\\b"
-        };
-
-        for (String patternStr : patterns) {
-            Pattern pattern = Pattern.compile(patternStr, Pattern.CASE_INSENSITIVE);
-            Matcher matcher = pattern.matcher(text);
-            while (matcher.find()) {
-                dates.add(matcher.group(1));
-            }
-        }
-
-        return dates;
-    }
-
-    /**
-     * Extract phone numbers
-     */
-    private List<String> extractPhoneNumbers(String text) {
-        List<String> phoneNumbers = new ArrayList<>();
-
-        String[] patterns = {
-            "\\b(\\d{3}[.-]\\d{3}[.-]\\d{4})\\b", "\\b(\\(\\d{3}\\)\\s*\\d{3}[.-]\\d{4})\\b", "\\b(\\d{10})\\b" };
-
-        for (String patternStr : patterns) {
-            Pattern pattern = Pattern.compile(patternStr);
-            Matcher matcher = pattern.matcher(text);
-            while (matcher.find()) {
-                phoneNumbers.add(matcher.group(1));
-            }
-        }
-
-        return phoneNumbers;
-    }
-
-    /**
-     * Extract email addresses
-     */
-    private List<String> extractEmails(String text) {
-        List<String> emails = new ArrayList<>();
-
-        Pattern pattern = Pattern.compile("\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Z|a-z]{2,}\\b");
-        Matcher matcher = pattern.matcher(text);
-
-        while (matcher.find()) {
-            emails.add(matcher.group());
-        }
-
-        return emails;
-    }
-
-    /**
-     * Extract key phrases from sentence
-     */
-    private List<String> extractSentenceKeyPhrases(String[] tokens, String[] posTags, String[] chunks) {
-        List<String> keyPhrases = new ArrayList<>();
-
-        // Extract noun phrases using chunking information
-        StringBuilder currentPhrase = new StringBuilder();
-        for (int i = 0; i < tokens.length && i < chunks.length; i++) {
-            String chunk = chunks[i];
-
-            if (chunk.startsWith("B-NP") || chunk.startsWith("I-NP")) {
-                // Part of noun phrase
-                if (currentPhrase.length() > 0) {
-                    currentPhrase.append(" ");
-                }
-                currentPhrase.append(currentPhrase.append(tokens[i]));
-            } else {
-                // End of noun phrase
-                if (currentPhrase.length() > 0) {
-                    String phrase = currentPhrase.toString().trim();
-                    if (isValidKeyPhrase(phrase)) {
-                        keyPhrases.add(phrase);
-                    }
-                    currentPhrase.setLength(0);
-                }
-            }
-        }
-
-        // Add final phrase if exists
-        if (currentPhrase.length() > 0) {
-            String phrase = currentPhrase.toString().trim();
-            if (isValidKeyPhrase(phrase)) {
-                keyPhrases.add(phrase);
-            }
-        }
-
-        // Extract important single words
-        for (int i = 0; i < tokens.length && i < posTags.length; i++) {
-            String token = tokens[i];
-            String pos = posTags[i];
-
-            if ((pos.startsWith("NN") || pos.startsWith("VB")) && !stopWords.contains(token.toLowerCase()) &&
-                token.length() > 2) {
-                keyPhrases.add(token);
-            }
-        }
-
-        return keyPhrases.stream()
-                         .distinct()
-                         .collect(Collectors.toList());
-    }
-
-    /**
-     * Advanced intent determination with confidence scoring
-     */
-    private String determineIntent(List<ProcessedSentence> sentences, String originalInput) {
-        Map<String, Double> intentScores = new HashMap<>();
-
-        // Initialize all intent scores
-        for (String intent : intentKeywords.keySet()) {
-            intentScores.put(intent, 0.0);
-        }
-
-        // Score based on keyword matching
-        for (ProcessedSentence sentence : sentences) {
-            for (String token : sentence.getTokens()) {
-                String lowerToken = token.toLowerCase();
-
-                for (Map.Entry<String, List<String>> entry : intentKeywords.entrySet()) {
-                    String intent = entry.getKey();
-                    List<String> keywords = entry.getValue();
-
-                    if (keywords.contains(lowerToken)) {
-                        intentScores.merge(intent, 1.0, Double::sum);
-                    }
-                }
-            }
-        }
-
-        // Score based on pattern matching
-        for (Map.Entry<String, List<Pattern>> entry : intentPatterns.entrySet()) {
-            String intent = entry.getKey();
-            List<Pattern> patterns = entry.getValue();
-
-            for (Pattern pattern : patterns) {
-                if (pattern.matcher(originalInput.toLowerCase()).find()) {
-                    intentScores.merge(intent, 2.0, Double::sum);
-                }
-            }
-        }
-
-        // Score based on entity presence
-        Map<String, List<String>> allEntities = combineEntities(sentences);
-        if (!allEntities.get("contractNumbers").isEmpty()) {
-            intentScores.merge("CONTRACT_DETAILS", 1.5, Double::sum);
-        }
-        if (!allEntities.get("customerNames").isEmpty()) {
-            intentScores.merge("CUSTOMER_INFO", 1.5, Double::sum);
-        }
-        if (!allEntities.get("accountNumbers").isEmpty()) {
-            intentScores.merge("ACCOUNT_INFO", 1.5, Double::sum);
-        }
-
-        // Find best intent
-        return intentScores.entrySet()
-                           .stream()
-                           .max(Map.Entry.comparingByValue())
-                           .map(Map.Entry::getKey)
-                           .orElse("GENERAL_INQUIRY");
-    }
-
-    /**
-     * Combine entities from all processed sentences
-     */
-    private Map<String, List<String>> combineEntities(List<ProcessedSentence> sentences) {
-        Map<String, List<String>> combinedEntities = new HashMap<>();
-
-        // Initialize entity lists
-        combinedEntities.put("contractNumbers", new ArrayList<>());
-        combinedEntities.put("customerNames", new ArrayList<>());
-        combinedEntities.put("organizationNames", new ArrayList<>());
-        combinedEntities.put("locations", new ArrayList<>());
-        combinedEntities.put("actions", new ArrayList<>());
-        combinedEntities.put("accountNumbers", new ArrayList<>());
-        combinedEntities.put("userNames", new ArrayList<>());
-        combinedEntities.put("dates", new ArrayList<>());
-        combinedEntities.put("phoneNumbers", new ArrayList<>());
-        combinedEntities.put("emails", new ArrayList<>());
-
-        // Combine entities from all sentences
-        for (ProcessedSentence sentence : sentences) {
-            Map<String, List<String>> sentenceEntities = sentence.getEntities();
-
-            for (Map.Entry<String, List<String>> entry : sentenceEntities.entrySet()) {
-                String entityType = entry.getKey();
-                List<String> entities = entry.getValue();
-
-                List<String> combinedList = combinedEntities.get(entityType);
-                if (combinedList != null) {
-                    for (String entity : entities) {
-                        if (!combinedList.contains(entity)) {
-                            combinedList.add(entity);
-                        }
-                    }
-                }
-            }
-        }
-
-        return combinedEntities;
-    }
-
-    /**
-     * Calculate confidence score for the parsed query
-     */
-    private double calculateConfidence(List<ProcessedSentence> sentences, String intent, String originalInput) {
-        double confidence = 0.0;
-
-        // Base confidence from intent keywords
-        List<String> intentWords = intentKeywords.get(intent);
-        if (intentWords != null) {
-            long matchCount = sentences.stream()
-                                       .flatMap(s -> Arrays.stream(s.getTokens()))
-                                       .map(String::toLowerCase)
-                                       .filter(intentWords::contains)
-                                       .count();
-
-            confidence += Math.min(matchCount * 0.2, 0.6);
-        }
-
-        // Confidence from pattern matching
-        List<Pattern> patterns = intentPatterns.get(intent);
-        if (patterns != null) {
-            for (Pattern pattern : patterns) {
-                if (pattern.matcher(originalInput.toLowerCase()).find()) {
-                    confidence += 0.3;
-                    break;
-                }
-            }
-        }
-
-        // Confidence from entity extraction
-        Map<String, List<String>> entities = combineEntities(sentences);
-        long entityCount = entities.values()
-                                   .stream()
-                                   .mapToLong(List::size)
-                                   .sum();
-        confidence += Math.min(entityCount * 0.1, 0.3);
-
-        // Confidence from sentence completeness
-        if (sentences.size() > 0 && !originalInput.trim().isEmpty()) {
-            confidence += 0.1;
-        }
-
-        // Apply intent-specific thresholds
-        Double threshold = intentConfidenceThresholds.get(intent);
-        if (threshold != null && confidence < threshold) {
-            confidence = Math.max(confidence, MIN_CONFIDENCE_THRESHOLD);
-        }
-
-        return Math.min(confidence, 1.0);
-    }
-
-    /**
-     * Validate and refine detected intent
-     */
-    private String validateAndRefineIntent(String intent, Map<String, List<String>> entities, double confidence) {
-        // If confidence is too low, default to general inquiry
-        if (confidence < MIN_CONFIDENCE_THRESHOLD) {
-            return "GENERAL_INQUIRY";
-        }
-
-        // Refine intent based on entity presence
-        if ("GENERAL_INQUIRY".equals(intent)) {
-            if (!entities.get("contractNumbers").isEmpty()) {
-                return "CONTRACT_DETAILS";
-            }
-            if (!entities.get("customerNames").isEmpty()) {
-                return "CUSTOMER_INFO";
-            }
-            if (!entities.get("accountNumbers").isEmpty()) {
-                return "ACCOUNT_INFO";
-            }
-        }
-        if (!entities.get("contractNumbers").isEmpty() && ("GENERAL_INQUIRY".equals(intent) || confidence < 0.5)) {
-            return "CONTRACT_DETAILS";
-        }
-
-        return intent;
-    }
-
-    /**
-     * Clean and validate extracted entities
-     */
-    private Map<String, List<String>> cleanAndValidateEntities(Map<String, List<String>> entities) {
-        Map<String, List<String>> cleanedEntities = new HashMap<>();
-
-        for (Map.Entry<String, List<String>> entry : entities.entrySet()) {
-            String entityType = entry.getKey();
-            List<String> entityList = entry.getValue();
-
-            List<String> cleanedList = entityList.stream()
-                                                 .filter(Objects::nonNull)
-                                                 .map(String::trim)
-                                                 .filter(s -> !s.isEmpty())
-                                                 .distinct()
-                                                 .collect(Collectors.toList());
-
-            cleanedEntities.put(entityType, cleanedList);
-        }
-
-        return cleanedEntities;
-    }
-
-    /**
-     * Create comprehensive ParsedQuery object
-     */
-    private ParsedQuery createParsedQuery(String intent, double confidence, Map<String, List<String>> entities,
-                                          String processedInput, String originalInput) {
+    
+    public ParsedQuery parseQuery(String userInput) {
         ParsedQuery query = new ParsedQuery();
-        query.setIntent(intent);
-        query.setConfidence(confidence);
-        query.setEntities(entities);
-        query.setProcessedInput(processedInput);
-        query.setOriginalInput(originalInput);
-        query.setTimestamp(System.currentTimeMillis());
-        query.setProcessingId(UUID.randomUUID().toString());
-
+        query.setOriginalQuery(userInput);
+        
+        // Step 1: Correct common typos
+        String correctedInput = correctTypos(userInput.toLowerCase());
+        query.setCorrectedQuery(correctedInput);
+        
+        // Step 2: Tokenize and analyze
+        String[] tokens = tokenizer.tokenize(correctedInput);
+        String[] posTags = posTagger.tag(tokens);
+        
+        // Step 3: Extract entities
+        extractEntities(query, tokens, correctedInput);
+        
+        // Step 4: Determine intent
+        determineIntent(query, tokens, posTags);
+        
+        // Step 5: Calculate confidence
+        query.setConfidence(calculateConfidence(query, tokens));
+        
         return query;
     }
-
-    /**
-     * Enrich parsed query with additional metadata
-     */
-    private void enrichParsedQuery(ParsedQuery query, List<ProcessedSentence> sentences) {
-        // Add sentence count
-        query.addMetadata("sentenceCount", sentences.size());
-
-        // Add token count
-        int totalTokens = sentences.stream()
-                                   .mapToInt(s -> s.getTokens().length)
-                                   .sum();
-        query.addMetadata("tokenCount", totalTokens);
-
-        // Add key phrases
-        List<String> allKeyPhrases = sentences.stream()
-                                              .flatMap(s -> s.getKeyPhrases().stream())
-                                              .distinct()
-                                              .collect(Collectors.toList());
-        query.addMetadata("keyPhrases", allKeyPhrases);
-
-        // Add processing statistics
-        query.addMetadata("cacheHitRate", calculateCacheHitRate());
-        query.addMetadata("totalQueriesProcessed", totalQueries.get());
+    
+    private String correctTypos(String input) {
+        String corrected = input;
+        for (Map.Entry<String, String> typo : commonTypos.entrySet()) {
+            corrected = corrected.replaceAll("\\b" + typo.getKey() + "\\b", typo.getValue());
+        }
+        return corrected;
     }
-
-    /**
-     * Validation methods
-     */
-    private boolean isValidContractNumber(String number) {
-        return number != null && number.matches("\\d{6,8}") && !number.equals("000000");
+    
+    private void extractEntities(ParsedQuery query, String[] tokens, String input) {
+        // Extract contract numbers
+        Matcher contractMatcher = CONTRACT_PATTERN.matcher(input.toUpperCase());
+        if (contractMatcher.find()) {
+            query.setContractNumber(contractMatcher.group());
+        }
+        
+        // Extract part numbers
+        Matcher partMatcher = PART_PATTERN.matcher(input.toUpperCase());
+        if (partMatcher.find()) {
+            query.setPartNumber(partMatcher.group());
+        }
+        
+        // Extract account numbers
+        Matcher accountMatcher = ACCOUNT_PATTERN.matcher(input);
+        if (accountMatcher.find()) {
+            query.setAccountNumber(accountMatcher.group());
+        }
+        
+        // Extract person names
+        Span[] personSpans = personNameFinder.find(tokens);
+        if (personSpans.length > 0) {
+            StringBuilder personName = new StringBuilder();
+            for (int i = personSpans[0].getStart(); i < personSpans[0].getEnd(); i++) {
+                personName.append(tokens[i]).append(" ");
+            }
+            query.setUserName(personName.toString().trim());
+        }
+        
+        // Extract organization names
+        Span[] orgSpans = organizationNameFinder.find(tokens);
+        if (orgSpans.length > 0) {
+            StringBuilder orgName = new StringBuilder();
+            for (int i = orgSpans[0].getStart(); i < orgSpans[0].getEnd(); i++) {
+                orgName.append(tokens[i]).append(" ");
+            }
+            query.setCustomerName(orgName.toString().trim());
+        }
     }
-
-    private boolean isValidAccountNumber(String number) {
-        return number != null && number.matches("\\d{8,12}") && !number.equals("00000000");
-    }
-
-    private boolean isValidUserName(String userName) {
-        return userName != null && userName.matches("[a-zA-Z0-9_]{3,20}");
-    }
-
-    private boolean isValidPersonName(String name) {
-        return name != null && name.matches("[A-Za-z\\s]{2,50}") &&
-               !Arrays.asList("user", "customer", "client", "person").contains(name.toLowerCase());
-    }
-
-    private boolean isValidKeyPhrase(String phrase) {
-        return phrase != null && phrase.length() > 2 && phrase.length() < 50 &&
-               !stopWords.contains(phrase.toLowerCase());
-    }
-
-    /**
-     * Fallback person name extraction
-     */
-    private List<String> extractPersonNamesFallback(String[] tokens) {
-        List<String> names = new ArrayList<>();
-
-        for (int i = 0; i < tokens.length - 1; i++) {
-            String token1 = tokens[i];
-            String token2 = tokens[i + 1];
-
-            if (Character.isUpperCase(token1.charAt(0)) && Character.isUpperCase(token2.charAt(0)) &&
-                token1.matches("[A-Za-z]+") && token2.matches("[A-Za-z]+")) {
-
-                String fullName = token1 + " " + token2;
-                if (isValidPersonName(fullName)) {
-                    names.add(fullName);
+    
+    private void determineIntent(ParsedQuery query, String[] tokens, String[] posTags) {
+        Map<String, Integer> intentScores = new HashMap<>();
+        
+        // Score each intent based on keyword matches
+        for (String token : tokens) {
+            for (Map.Entry<String, Set<String>> intent : intentKeywords.entrySet()) {
+                if (intent.getValue().contains(token.toLowerCase())) {
+                    intentScores.put(intent.getKey(), intentScores.getOrDefault(intent.getKey(), 0) + 1);
                 }
             }
         }
-
-        return names;
+        
+        // Determine primary intent and action
+        String topIntent = intentScores.entrySet().stream()
+            .max(Map.Entry.comparingByValue())
+            .map(Map.Entry::getKey)
+            .orElse("UNKNOWN");
+        
+        // Set query type and action based on intent and context
+        setQueryTypeAndAction(query, topIntent, tokens);
     }
-
+    
+        private void setQueryTypeAndAction(ParsedQuery query, String intent, String[] tokens) {
+        String tokenString = String.join(" ", tokens).toLowerCase();
+        
+        switch (intent) {
+            case "CONTRACT_INFO":
+                query.setQueryType(ParsedQuery.QueryType.CONTRACT_INFO);
+                if (tokenString.contains("show") || tokenString.contains("display")) {
+                    query.setActionType(ParsedQuery.ActionType.SHOW);
+                } else if (tokenString.contains("details")) {
+                    query.setActionType(ParsedQuery.ActionType.DETAILS);
+                } else {
+                    query.setActionType(ParsedQuery.ActionType.INFO);
+                }
+                break;
+                
+            case "PARTS_INFO":
+                if (tokenString.contains("failed") || tokenString.contains("failure") || tokenString.contains("error")) {
+                    query.setQueryType(ParsedQuery.QueryType.FAILED_PARTS);
+                    query.setActionType(ParsedQuery.ActionType.LIST);
+                } else if (tokenString.contains("contract") && query.getPartNumber() == null) {
+                    query.setQueryType(ParsedQuery.QueryType.PARTS_BY_CONTRACT);
+                    query.setActionType(ParsedQuery.ActionType.LIST);
+                } else {
+                    query.setQueryType(ParsedQuery.QueryType.PARTS_INFO);
+                    determinePartsAction(query, tokenString);
+                }
+                break;
+                
+            case "STATUS_CHECK":
+                query.setQueryType(ParsedQuery.QueryType.STATUS_CHECK);
+                query.setActionType(ParsedQuery.ActionType.CHECK_STATUS);
+                if (tokenString.contains("expired")) {
+                    query.setStatusType("expired");
+                } else if (tokenString.contains("active")) {
+                    query.setStatusType("active");
+                }
+                break;
+                
+            case "CUSTOMER_INFO":
+                query.setQueryType(ParsedQuery.QueryType.CUSTOMER_INFO);
+                query.setActionType(ParsedQuery.ActionType.INFO);
+                break;
+                
+            case "HELP_CREATE":
+                query.setQueryType(ParsedQuery.QueryType.HELP_CREATE_CONTRACT);
+                query.setActionType(ParsedQuery.ActionType.CREATE);
+                break;
+                
+            case "FAILED_PARTS":
+                query.setQueryType(ParsedQuery.QueryType.FAILED_PARTS);
+                query.setActionType(ParsedQuery.ActionType.LIST);
+                break;
+                
+            default:
+                query.setQueryType(ParsedQuery.QueryType.UNKNOWN);
+                query.setActionType(ParsedQuery.ActionType.INFO);
+        }
+    }
+    
+    private void determinePartsAction(ParsedQuery query, String tokenString) {
+        if (tokenString.contains("specifications") || tokenString.contains("spec")) {
+            query.setActionType(ParsedQuery.ActionType.GET_SPECIFICATIONS);
+        } else if (tokenString.contains("active") || tokenString.contains("discontinued")) {
+            query.setActionType(ParsedQuery.ActionType.CHECK_ACTIVE);
+        } else if (tokenString.contains("datasheet")) {
+            query.setActionType(ParsedQuery.ActionType.GET_DATASHEET);
+        } else if (tokenString.contains("compatible")) {
+            query.setActionType(ParsedQuery.ActionType.GET_COMPATIBLE);
+        } else if (tokenString.contains("stock")) {
+            query.setActionType(ParsedQuery.ActionType.CHECK_STOCK);
+        } else if (tokenString.contains("lead") && tokenString.contains("time")) {
+            query.setActionType(ParsedQuery.ActionType.GET_LEAD_TIME);
+        } else if (tokenString.contains("manufacturer")) {
+            query.setActionType(ParsedQuery.ActionType.GET_MANUFACTURER);
+        } else if (tokenString.contains("issues") || tokenString.contains("defects")) {
+            query.setActionType(ParsedQuery.ActionType.CHECK_ISSUES);
+        } else if (tokenString.contains("warranty")) {
+            query.setActionType(ParsedQuery.ActionType.GET_WARRANTY);
+        } else {
+            query.setActionType(ParsedQuery.ActionType.INFO);
+        }
+    }
+    
+    private double calculateConfidence(ParsedQuery query, String[] tokens) {
+        double confidence = 0.5; // Base confidence
+        
+        // Increase confidence if we found specific entities
+        if (query.getContractNumber() != null) confidence += 0.2;
+        if (query.getPartNumber() != null) confidence += 0.2;
+        if (query.getUserName() != null) confidence += 0.1;
+        if (query.getCustomerName() != null) confidence += 0.1;
+        
+        // Increase confidence if query type is not unknown
+        if (query.getQueryType() != ParsedQuery.QueryType.UNKNOWN) confidence += 0.2;
+        
+        return Math.min(confidence, 1.0);
+    }
+    
+    private String executeQuery(ParsedQuery query) {
+        // Use the enum directly without quotes
+        switch (query.getQueryType()) {
+            case CONTRACT_INFO:
+                return handleContractInfo(query);
+            case USER_CONTRACT_QUERY:
+                return handleUserContractQuery(query);
+            case STATUS_CHECK:
+                return handleStatusCheck(query);
+            case CUSTOMER_INFO:
+                return handleCustomerInfo(query);
+            case PARTS_INFO:
+                return handlePartsInfo(query);
+            case PARTS_BY_CONTRACT:
+                return handlePartsByContract(query);
+            case FAILED_PARTS:
+                return handleFailedParts(query);
+            case HELP_CREATE_CONTRACT:
+                return handleCreateContractHelp(query);
+            case UNKNOWN:
+                return "❓ I'm sorry, I didn't understand your request. Could you please rephrase it?\n\n" +
+                       "💡 Try asking:\n" +
+                       "• 'Show contract ABC123'\n" +
+                       "• 'Parts for contract XYZ456'\n" +
+                       "• 'Status of part AE125'\n" +
+                       "• 'Customer info for Boeing'";
+            default:
+                return "❓ I'm sorry, I didn't understand your request. Could you please rephrase it?";
+        }
+    }
+    
+    // Wrapper methods for different query types
+    private String handleContractInfo(ParsedQuery query) {
+        if (query.getContractNumber() != null) {
+            return contractByContractNumber(query.getContractNumber());
+        }
+        return "Please provide a contract number to get contract information.";
+    }
+    
+    private String handleUserContractQuery(ParsedQuery query) {
+        if (query.getUserName() != null) {
+            return contractByUser(query.getUserName());
+        }
+        return "Please specify a user name to search for contracts.";
+    }
+    
+    private String handleStatusCheck(ParsedQuery query) {
+        if (query.getContractNumber() != null) {
+            return checkContractStatus(query.getContractNumber());
+        } else if (query.getStatusType() != null) {
+            return getContractsByStatus(query.getStatusType());
+        }
+        return "Please specify a contract number or status type.";
+    }
+    
+    private String handleCustomerInfo(ParsedQuery query) {
+        if (query.getCustomerName() != null) {
+            return getCustomerContracts(query.getCustomerName());
+        } else if (query.getAccountNumber() != null) {
+            return getCustomerByAccount(query.getAccountNumber());
+        }
+        return "Please specify a customer name or account number.";
+    }
+    
+    private String handlePartsInfo(ParsedQuery query) {
+        if (query.getPartNumber() == null) {
+            return "Please specify a part number.";
+        }
+        
+        switch (query.getActionType()) {
+            case GET_SPECIFICATIONS:
+                return getPartSpecifications(query.getPartNumber());
+            case CHECK_ACTIVE:
+                return checkPartStatus(query.getPartNumber());
+            case GET_DATASHEET:
+                return getPartDatasheet(query.getPartNumber());
+            case GET_COMPATIBLE:
+                return getCompatibleParts(query.getPartNumber());
+            case CHECK_STOCK:
+                return checkPartStock(query.getPartNumber());
+            case GET_LEAD_TIME:
+                return getPartLeadTime(query.getPartNumber());
+            case GET_MANUFACTURER:
+                return getPartManufacturer(query.getPartNumber());
+            case CHECK_ISSUES:
+                return getPartIssues(query.getPartNumber());
+            case GET_WARRANTY:
+                return getPartWarranty(query.getPartNumber());
+            default:
+                return pullPartsInfoByPartsNumber(query.getPartNumber());
+        }
+    }
+    
+    private String handlePartsByContract(ParsedQuery query) {
+        if (query.getContractNumber() != null) {
+            return pullPartsByContract(query.getContractNumber());
+        }
+        return "Please specify a contract number to get parts information.";
+    }
+    
+    private String handleFailedParts(ParsedQuery query) {
+        if (query.getContractNumber() != null) {
+            return failedPartsByContract(query.getContractNumber());
+        } else if (query.getPartNumber() != null) {
+            return isPartsFailed(query.getPartNumber());
+        } else {
+            return failedParts();
+        }
+    }
+    
+    private String handleCreateContractHelp(ParsedQuery query) {
+        return createContractHelp();
+    }
+    
+    // Business logic wrapper methods - these will contain your database calls
+    
     /**
-     * Cache management methods
+     * Get contract information by contract number
      */
-    private String generateCacheKey(String input) {
-        return Integer.toString(input.toLowerCase()
-                                     .trim()
-                                     .hashCode());
+    public String contractByContractNumber(String contractNumber) {
+        // TODO: Implement database call to get contract details
+        return "Retrieving contract information for: " + contractNumber;
     }
-
-    private void cacheQuery(String key, ParsedQuery result) {
-        if (queryCache.size() >= MAX_CACHE_SIZE) {
-            // Simple LRU eviction - remove oldest entries
-            Iterator<String> iterator = queryCache.keySet().iterator();
-            for (int i = 0; i < MAX_CACHE_SIZE / 4 && iterator.hasNext(); i++) {
-                iterator.next();
-                iterator.remove();
+    
+    /**
+     * Get contracts by user name
+     */
+    public String contractByUser(String userName) {
+        // TODO: Implement database call to get user's contracts
+        return "Retrieving contracts for user: " + userName;
+    }
+    
+    /**
+     * Get contracts by date range
+     */
+    public String contractByDates(String dateRange) {
+        // TODO: Implement database call to get contracts by date
+        return "Retrieving contracts for date range: " + dateRange;
+    }
+    
+    /**
+     * Check contract status
+     */
+    public String checkContractStatus(String contractNumber) {
+        // TODO: Implement database call to check contract status
+        return "Checking status for contract: " + contractNumber;
+    }
+    
+    /**
+     * Get contracts by status type
+     */
+    public String getContractsByStatus(String statusType) {
+        // TODO: Implement database call to get contracts by status
+        return "Retrieving " + statusType + " contracts";
+    }
+    
+    /**
+     * Get customer contracts
+     */
+    public String getCustomerContracts(String customerName) {
+        // TODO: Implement database call to get customer contracts
+        return "Retrieving contracts for customer: " + customerName;
+    }
+    
+    /**
+     * Get customer by account number
+     */
+    public String getCustomerByAccount(String accountNumber) {
+        // TODO: Implement database call to get customer by account
+        return "Retrieving customer information for account: " + accountNumber;
+    }
+    
+    /**
+     * Get parts by contract number
+     */
+    public String pullPartsByContract(String contractNumber) {
+        // TODO: Implement database call to get parts by contract
+        return "Retrieving parts for contract: " + contractNumber;
+    }
+    
+    /**
+     * Get part information by part number
+     */
+    public String pullPartsInfoByPartsNumber(String partNumber) {
+        // TODO: Implement database call to get part information
+        return "Retrieving information for part: " + partNumber;
+    }
+    
+    /**
+     * Get failed parts by contract
+     */
+    public String failedPartsByContract(String contractNumber) {
+        // TODO: Implement database call to get failed parts by contract
+        return "Retrieving failed parts for contract: " + contractNumber;
+    }
+    
+    /**
+     * Get all failed parts
+     */
+    public String failedParts() {
+        // TODO: Implement database call to get all failed parts
+        return "Retrieving all failed parts";
+    }
+    
+    /**
+     * Check if specific part has failed
+     */
+    public String isPartsFailed(String partNumber) {
+        // TODO: Implement database call to check if part failed
+        return "Checking failure status for part: " + partNumber;
+    }
+    
+    /**
+     * Get part specifications
+     */
+    public String getPartSpecifications(String partNumber) {
+        // TODO: Implement database call to get part specifications
+        return "Retrieving specifications for part: " + partNumber;
+    }
+    
+    /**
+     * Check if part is active or discontinued
+     */
+    public String checkPartStatus(String partNumber) {
+        // TODO: Implement database call to check part status
+        return "Checking active status for part: " + partNumber;
+    }
+    
+    /**
+     * Get part datasheet
+     */
+    public String getPartDatasheet(String partNumber) {
+        // TODO: Implement database call to get part datasheet
+        return "Retrieving datasheet for part: " + partNumber;
+    }
+    
+    /**
+     * Get compatible parts
+     */
+    public String getCompatibleParts(String partNumber) {
+        // TODO: Implement database call to get compatible parts
+        return "Retrieving compatible parts for: " + partNumber;
+    }
+    
+    /**
+     * Check part stock availability
+     */
+    public String checkPartStock(String partNumber) {
+        // TODO: Implement database call to check stock
+        return "Checking stock availability for part: " + partNumber;
+    }
+    
+    /**
+     * Get part lead time
+     */
+    public String getPartLeadTime(String partNumber) {
+        // TODO: Implement database call to get lead time
+        return "Retrieving lead time for part: " + partNumber;
+    }
+    
+    /**
+     * Get part manufacturer
+     */
+    public String getPartManufacturer(String partNumber) {
+        // TODO: Implement database call to get manufacturer
+        return "Retrieving manufacturer for part: " + partNumber;
+    }
+    
+    /**
+     * Get part issues/defects
+     */
+    public String getPartIssues(String partNumber) {
+        // TODO: Implement database call to get part issues
+        return "Retrieving known issues for part: " + partNumber;
+    }
+    
+    /**
+     * Get part warranty information
+     */
+    public String getPartWarranty(String partNumber) {
+        // TODO: Implement database call to get warranty info
+        return "Retrieving warranty information for part: " + partNumber;
+    }
+    
+    /**
+     * Provide help for creating contracts
+     */
+    public String createContractHelp() {
+        return "To create a new contract, please follow these steps:\n" +
+               "1. Navigate to the Contract Creation page\n" +
+               "2. Fill in the required fields (Customer, Start Date, End Date)\n" +
+               "3. Add contract items and parts\n" +
+               "4. Review and submit for approval\n" +
+               "Would you like me to guide you through any specific step?";
+    }
+    private InputStream getModelInputStream(String fileName) {
+           
+            if (fileName != null) {
+                try {
+                    String fullPath = MODEL_BASE_PATH + fileName;
+                    File modelFile = new File(fullPath);
+                    System.out.println("=== Diagnosing: " + fileName + " ===");
+                    System.out.println("Exists: " + modelFile.exists());
+                    System.out.println("Size: " + modelFile.length() + " bytes");
+                    System.out.println("Readable: " + modelFile.canRead());
+                    
+                    // Verify file before opening
+                    if (!modelFile.exists()) {
+                        System.err.println("File does not exist: " + fullPath);
+                        return null;
+                    }
+                    if (!modelFile.canRead()) {
+                        System.err.println("Cannot read file: " + fullPath);
+                        return null;
+                    }
+                    if (modelFile.length() == 0) {
+                        System.err.println("File is empty: " + fullPath);
+                        return null;
+                    }
+                    
+                    return new FileInputStream(modelFile);
+                } catch (Exception e) {
+                    System.err.println("Error opening file " + fileName + ": " + e.getMessage());
+                    return null;
+                }
             }
+            return null;
         }
-        queryCache.put(key, result);
-    }
-
-    private double calculateCacheHitRate() {
-        long total = totalQueries.get();
-        long hits = cacheHits.get();
-        return total > 0 ? (double) hits / total : 0.0;
-    }
-
-    /**
-     * Error handling
-     */
-    private ParsedQuery createErrorResponse(String errorMessage, String originalInput) {
-        ParsedQuery errorQuery = new ParsedQuery();
-        errorQuery.setIntent("ERROR");
-        errorQuery.setConfidence(0.0);
-        errorQuery.setOriginalInput(originalInput);
-        errorQuery.setProcessedInput("");
-        errorQuery.setEntities(new HashMap<>());
-        errorQuery.setTimestamp(System.currentTimeMillis());
-        errorQuery.addMetadata("error", errorMessage);
-
-        return errorQuery;
-    }
-
-    /**
-     * Configuration initialization methods
-     */
-    private Map<String, Double> initializeConfidenceThresholds() {
-        Map<String, Double> thresholds = new HashMap<>();
-        thresholds.put("CONTRACT_DETAILS", 0.3);
-        thresholds.put("CUSTOMER_INFO", 0.25);
-        thresholds.put("ACCOUNT_INFO", 0.25);
-        thresholds.put("USER_MANAGEMENT", 0.4);
-        thresholds.put("SYSTEM_STATUS", 0.35);
-        thresholds.put("GENERAL_INQUIRY", 0.1);
-        thresholds.put("GREETING", 0.2);
-        thresholds.put("GOODBYE", 0.2);
-        return thresholds;
-    }
-
-    private Map<String, List<String>> initializeIntentKeywords() {
-        Map<String, List<String>> keywords = new HashMap<>();
-
-        keywords.put("CONTRACT_DETAILS",
-                     Arrays.asList("contract", "agreement", "deal", "policy", "details", "information", "show", "get",
-                                   "find", "lookup", "retrieve", "view", "display", "give", "tell", "about", "data",
-                                   "say", "check", "need", "want"));
-
-        keywords.put("CUSTOMER_INFO",
-                     Arrays.asList("customer", "client", "person", "user", "account", "profile", "information",
-                                   "details", "data", "record", "history"));
-
-        keywords.put("ACCOUNT_INFO",
-                     Arrays.asList("account", "balance", "statement", "transaction", "payment", "billing", "invoice",
-                                   "charges", "fees", "summary"));
-
-        keywords.put("USER_MANAGEMENT",
-                     Arrays.asList("user", "username", "password", "login", "access", "permission", "role", "admin",
-                                   "create", "delete", "modify", "update"));
-
-        keywords.put("SYSTEM_STATUS",
-                     Arrays.asList("status", "health", "system", "server", "database", "connection", "online",
-                                   "offline", "working", "down", "error", "issue"));
-
-        keywords.put("GENERAL_INQUIRY",
-                     Arrays.asList("help", "what", "how", "when", "where", "why", "can", "could", "would", "should",
-                                   "tell", "explain", "describe"));
-
-        keywords.put("GREETING",
-                     Arrays.asList("hello", "hi", "hey", "good", "morning", "afternoon", "evening", "greetings",
-                                   "welcome", "start", "begin"));
-
-        keywords.put("GOODBYE",
-                     Arrays.asList("bye", "goodbye", "farewell", "exit", "quit", "end", "finish", "thanks", "thank",
-                                   "done", "complete"));
-
-        return keywords;
-    }
-
-    private Map<String, String> initializeSpellingCorrections() {
-        Map<String, String> corrections = new HashMap<>();
-        corrections.put("contarct", "contract");
-        corrections.put("contrct", "contract");
-        corrections.put("conract", "contract");
-        corrections.put("cntrct", "contract");
-        corrections.put("contrac", "contract");
-        corrections.put("contractt", "contract");
-        corrections.put("custmer", "customer");
-        corrections.put("cusotmer", "customer");
-        corrections.put("accont", "account");
-        corrections.put("acount", "account");
-        corrections.put("infomation", "information");
-        corrections.put("informaton", "information");
-        corrections.put("detials", "details");
-        corrections.put("deatils", "details");
-        corrections.put("shwo", "show");
-        corrections.put("teh", "the");
-        corrections.put("recrod", "record");
-        corrections.put("reocrd", "record");
-        return corrections;
-    }
-
-    private Map<String, List<Pattern>> initializeIntentPatterns() {
-        Map<String, List<Pattern>> patterns = new HashMap<>();
-
-        patterns.put("CONTRACT_DETAILS",
-                     Arrays.asList(Pattern.compile("(?i).*contract\\s+\\d+.*"),
-                                   Pattern.compile("(?i).*show.*contract.*"),
-                                   Pattern.compile("(?i).*get.*contract.*details.*"),
-                                   Pattern.compile("(?i).*find.*agreement.*"),
-                                   Pattern.compile("(?i).*lookup.*policy.*"),
-                                   Pattern.compile("(?i).*can\\s+you\\s+give.*contract.*"),
-                                   Pattern.compile("(?i).*could\\s+you\\s+tell.*contract.*"),
-                                   Pattern.compile("(?i).*do\\s+you\\s+have.*contract.*"),
-                                   Pattern.compile("(?i).*what\\s+does\\s+contract.*say.*"),
-                                   Pattern.compile("(?i).*tell\\s+me\\s+about\\s+contract.*"),
-                                   Pattern.compile("(?i).*i\\s+need.*check.*contract.*"),
-                                   Pattern.compile("(?i).*i\\s+want.*details.*contract.*"),
-                                   Pattern.compile("(?i).*need\\s+data.*contract.*"),
-                                   Pattern.compile("(?i).*please\\s+show\\s+contract.*")));
-
-        patterns.put("CUSTOMER_INFO",
-                     Arrays.asList(Pattern.compile("(?i).*customer\\s+\\w+.*"),
-                                   Pattern.compile("(?i).*client\\s+information.*"),
-                                   Pattern.compile("(?i).*user\\s+profile.*"),
-                                   Pattern.compile("(?i).*account\\s+holder.*")));
-
-        patterns.put("ACCOUNT_INFO",
-                     Arrays.asList(Pattern.compile("(?i).*account\\s+\\d+.*"), Pattern.compile("(?i).*balance.*"),
-                                   Pattern.compile("(?i).*statement.*"),
-                                   Pattern.compile("(?i).*transaction.*history.*")));
-
-        patterns.put("USER_MANAGEMENT",
-                     Arrays.asList(Pattern.compile("(?i).*create\\s+user.*"), Pattern.compile("(?i).*delete\\s+user.*"),
-                                   Pattern.compile("(?i).*user\\s+access.*"),
-                                   Pattern.compile("(?i).*reset\\s+password.*")));
-
-        patterns.put("GREETING",
-                     Arrays.asList(Pattern.compile("(?i)^(hi|hello|hey|good\\s+(morning|afternoon|evening)).*"),
-                                   Pattern.compile("(?i).*greetings.*"), Pattern.compile("(?i).*welcome.*")));
-
-        patterns.put("GOODBYE",
-                     Arrays.asList(Pattern.compile("(?i).*(bye|goodbye|farewell|exit|quit).*"),
-                                   Pattern.compile("(?i).*thank.*you.*"),
-                                   Pattern.compile("(?i).*(done|finished|complete).*")));
-
-        return patterns;
-    }
-
-
-    private Set<String> initializeStopWords() {
-        return Collections.unmodifiableSet(new HashSet<>(Arrays.asList("a", "an", "and", "are", "as", "at", "be", "by",
-                                                                       "for", "from", "has", "he", "in", "is", "it",
-                                                                       "its", "of", "on", "that", "the", "to", "was",
-                                                                       "will", "with", "i", "me", "my", "we", "our",
-                                                                       "you", "your", "this", "these", "those", "they",
-                                                                       "them", "their", "have", "had", "do", "does",
-                                                                       "did", "can", "could", "should", "would", "may",
-                                                                       "might", "must", "shall", "will", "am", "is",
-                                                                       "are", "was", "were", "been", "being", "have",
-                                                                       "has", "had", "do", "does", "did")));
-    }
-
-    /**
-     * Public utility methods for external access
-     */
-    public Map<String, Object> getServiceStatistics() {
-        Map<String, Object> stats = new HashMap<>();
-        stats.put("totalQueries", totalQueries.get());
-        stats.put("cacheHits", cacheHits.get());
-        stats.put("cacheHitRate", calculateCacheHitRate());
-        stats.put("cacheSize", queryCache.size());
-        stats.put("averageProcessingTimes", getAverageProcessingTimes());
-        stats.put("modelsLoaded", getLoadedModelsCount());
-        return stats;
-    }
-
-    private Map<String, Long> getAverageProcessingTimes() {
-        return new HashMap<>(processingTimes);
-    }
-
-    private int getLoadedModelsCount() {
-        int count = 0;
-        if (tokenizer != null)
-            count++;
-        if (posTagger != null)
-            count++;
-        if (sentenceDetector != null)
-            count++;
-        if (personNameFinder != null)
-            count++;
-        if (organizationNameFinder != null)
-            count++;
-        if (locationNameFinder != null)
-            count++;
-        if (chunker != null)
-            count++;
-        if (lemmatizer != null)
-            count++;
-        return count;
-    }
-
-    public void clearCache() {
-        queryCache.clear();
-        LOGGER.info("Query cache cleared");
-    }
-
-    public void resetStatistics() {
-        totalQueries.set(0);
-        cacheHits.set(0);
-        processingTimes.clear();
-        LOGGER.info("Service statistics reset");
-    }
-
-    /**
-     * Cleanup method for proper resource management
-     */
-    public void cleanup() {
-        if (personNameFinder != null) {
-            personNameFinder.clearAdaptiveData();
-        }
-        if (organizationNameFinder != null) {
-            organizationNameFinder.clearAdaptiveData();
-        }
-        if (locationNameFinder != null) {
-            locationNameFinder.clearAdaptiveData();
-        }
-
-        queryCache.clear();
-        processingTimes.clear();
-
-        LOGGER.info("ChatbotNLPService cleanup completed");
-    }
-
-    /**
-     * Inner class to represent processed sentence data
-     */
-    private static class ProcessedSentence {
-        private final String[] tokens;
-        private final String[] posTags;
-        private final String[] lemmas;
-        private final String[] chunks;
-        private final Map<String, List<String>> entities;
-        private final List<String> keyPhrases;
-        private final String originalSentence;
-
-        public ProcessedSentence(String[] tokens, String[] posTags, String[] lemmas, String[] chunks,
-                                 Map<String, List<String>> entities, List<String> keyPhrases, String originalSentence) {
-            this.tokens = tokens;
-            this.posTags = posTags;
-            this.lemmas = lemmas;
-            this.chunks = chunks;
-            this.entities = entities;
-            this.keyPhrases = keyPhrases;
-            this.originalSentence = originalSentence;
-        }
-
-        // Getters
-        public String[] getTokens() {
-            return tokens;
-        }
-
-        public String[] getPosTags() {
-            return posTags;
-        }
-
-        public String[] getLemmas() {
-            return lemmas;
-        }
-
-        public String[] getChunks() {
-            return chunks;
-        }
-
-        public Map<String, List<String>> getEntities() {
-            return entities;
-        }
-
-        public List<String> getKeyPhrases() {
-            return keyPhrases;
-        }
-
-        public String getOriginalSentence() {
-            return originalSentence;
-        }
-    }
 }
-
-
