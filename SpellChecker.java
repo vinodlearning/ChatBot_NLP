@@ -69,7 +69,11 @@ public class SpellChecker {
             "between", "important", "example", "government", "company", "system",
             "program", "question", "number", "public", "information", "development",
             "i", "me", "him", "her", "us", "them", "myself", "yourself", "himself",
-            "herself", "ourselves", "themselves"
+            "herself", "ourselves", "themselves", "show", "contract", "details",
+            "display", "view", "get", "fetch", "retrieve", "find", "search", "list",
+            "create", "update", "delete", "add", "remove", "edit", "modify", "save",
+            "document", "file", "record", "data", "user", "customer", "client",
+            "order", "invoice", "payment", "account", "status", "active", "inactive"
         };
         
         for (String word : commonWords) {
@@ -77,13 +81,15 @@ public class SpellChecker {
         }
         
         // Give higher frequencies to very common words
-        dictionary.put("my", 5000);
-        dictionary.put("i", 5000);
-        dictionary.put("you", 5000);
-        dictionary.put("the", 10000);
-        dictionary.put("and", 8000);
-        dictionary.put("is", 7000);
-        dictionary.put("a", 6000);
+        dictionary.put("my", 10000);  // Higher than "am"
+        dictionary.put("i", 8000);
+        dictionary.put("you", 7000);
+        dictionary.put("the", 15000);
+        dictionary.put("and", 12000);
+        dictionary.put("is", 10000);
+        dictionary.put("a", 9000);
+        dictionary.put("show", 6000);  // High frequency for "shw" correction
+        dictionary.put("contract", 5000);  // High frequency for "cntroct" correction
         
         // Add common contractions
         dictionary.put("i'm", 4000);
