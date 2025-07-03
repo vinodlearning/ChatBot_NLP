@@ -67,12 +67,30 @@ public class SpellChecker {
             "weird", "friend", "business", "really", "until", "immediately",
             "sophisticated", "my", "name", "am", "people", "person", "because",
             "between", "important", "example", "government", "company", "system",
-            "program", "question", "number", "public", "information", "development"
+            "program", "question", "number", "public", "information", "development",
+            "i", "me", "him", "her", "us", "them", "myself", "yourself", "himself",
+            "herself", "ourselves", "themselves"
         };
         
         for (String word : commonWords) {
             dictionary.put(word, 1000);
         }
+        
+        // Give higher frequencies to very common words
+        dictionary.put("my", 5000);
+        dictionary.put("i", 5000);
+        dictionary.put("you", 5000);
+        dictionary.put("the", 10000);
+        dictionary.put("and", 8000);
+        dictionary.put("is", 7000);
+        dictionary.put("a", 6000);
+        
+        // Add common contractions
+        dictionary.put("i'm", 4000);
+        dictionary.put("don't", 3000);
+        dictionary.put("can't", 3000);
+        dictionary.put("won't", 3000);
+        dictionary.put("it's", 3000);
         
         System.out.println("Basic dictionary created with " + commonWords.length + " words.");
     }
@@ -169,21 +187,47 @@ public class SpellChecker {
         StringBuilder correctedText = new StringBuilder();
         
         for (String word : words) {
-            // Remove punctuation for spell checking
+            String originalWord = word;
+            
+            // Handle special contractions
+            if (word.matches(".*[;].*")) {
+                word = word.replaceAll(";", "'");
+                // Capitalize "i" in contractions
+                if (word.toLowerCase().startsWith("i'")) {
+                    word = "I" + word.substring(1);
+                }
+                correctedText.append(word);
+                if (!word.equals(originalWord)) {
+                    System.out.println("Corrected: " + originalWord + " -> " + word);
+                }
+                correctedText.append(" ");
+                continue;
+            }
+            
+            // Remove punctuation for spell checking but preserve it
             String cleanWord = word.replaceAll("[^a-zA-Z]", "");
+            String punctuation = word.replaceAll("[a-zA-Z]", "");
+            
             if (cleanWord.isEmpty()) {
                 correctedText.append(word).append(" ");
                 continue;
             }
             
+            // Skip likely proper names (capitalized words that aren't at sentence start)
+            if (Character.isUpperCase(cleanWord.charAt(0)) && !isFirstWordOfSentence(word, correctedText.toString())) {
+                correctedText.append(word);
+                correctedText.append(" ");
+                continue;
+            }
+            
             try {
-                List<Suggestion> suggestions = findSuggestions(cleanWord);
+                List<Suggestion> suggestions = findSuggestions(cleanWord.toLowerCase());
                 
                 if (!suggestions.isEmpty() && suggestions.get(0).distance > 0) {
                     // Replace with best suggestion, preserving original punctuation
-                    String corrected = word.replace(cleanWord, suggestions.get(0).word);
+                    String corrected = suggestions.get(0).word + punctuation;
                     correctedText.append(corrected);
-                    System.out.println("Corrected: " + word + " -> " + corrected);
+                    System.out.println("Corrected: " + originalWord + " -> " + corrected);
                 } else {
                     correctedText.append(word);
                 }
@@ -195,6 +239,11 @@ public class SpellChecker {
         
         System.out.println("\nOriginal: " + text);
         System.out.println("Corrected: " + correctedText.toString().trim());
+    }
+    
+    private boolean isFirstWordOfSentence(String word, String previousText) {
+        if (previousText.trim().isEmpty()) return true;
+        return previousText.matches(".*[.!?]\\s*$");
     }
     
     // Inner class to represent a suggestion
