@@ -76,7 +76,11 @@ public class SpellChecker {
             "order", "invoice", "payment", "account", "status", "active", "inactive",
             "contracts", "customers", "accounts", "users", "clients", "orders",
             "effective", "expired", "draft", "state", "date", "month", "year",
-            "created", "between", "from", "today", "summary", "number", "by"
+            "created", "between", "from", "today", "summary", "number", "by",
+            "info", "information", "metadata", "after", "before", "under", "all",
+            "project", "type", "price", "list", "corporate", "opportunity", "code",
+            "fields", "last", "details", "fields", "boeing", "siemens", "mary",
+            "honeywel", "honeywell", "jan", "june", "january", "vinod"
         };
         
         for (String word : commonWords) {
@@ -102,6 +106,12 @@ public class SpellChecker {
         dictionary.put("draft", 3000);      // High frequency for "drafft" correction
         dictionary.put("status", 3500);     // High frequency for status variations
         dictionary.put("date", 4000);       // Should stay as "date", not "data"
+        dictionary.put("info", 4500);       // High frequency for "infro" correction
+        dictionary.put("after", 4000);      // High frequency for "aftr" correction
+        dictionary.put("last", 3500);       // High frequency for "lst" correction
+        dictionary.put("between", 3000);    // High frequency for "btwn" correction
+        dictionary.put("created", 3500);    // High frequency for "creatd" correction
+        dictionary.put("vinod", 2000);      // Proper name - lower frequency but present
         
         // Add common contractions
         dictionary.put("i'm", 4000);
@@ -109,6 +119,10 @@ public class SpellChecker {
         dictionary.put("can't", 3000);
         dictionary.put("won't", 3000);
         dictionary.put("it's", 3000);
+        
+        // Add common abbreviations
+        dictionary.put("no", 2500);          // For "number"
+        dictionary.put("acc", 2000);         // For "account"
         
         System.out.println("Basic dictionary created with " + commonWords.length + " words.");
     }
