@@ -73,7 +73,10 @@ public class SpellChecker {
             "display", "view", "get", "fetch", "retrieve", "find", "search", "list",
             "create", "update", "delete", "add", "remove", "edit", "modify", "save",
             "document", "file", "record", "data", "user", "customer", "client",
-            "order", "invoice", "payment", "account", "status", "active", "inactive"
+            "order", "invoice", "payment", "account", "status", "active", "inactive",
+            "contracts", "customers", "accounts", "users", "clients", "orders",
+            "effective", "expired", "draft", "state", "date", "month", "year",
+            "created", "between", "from", "today", "summary", "number", "by"
         };
         
         for (String word : commonWords) {
@@ -90,6 +93,15 @@ public class SpellChecker {
         dictionary.put("a", 9000);
         dictionary.put("show", 6000);  // High frequency for "shw" correction
         dictionary.put("contract", 5000);  // High frequency for "cntroct" correction
+        dictionary.put("contracts", 4800);  // Plural form
+        dictionary.put("customer", 4500);   // High frequency for customer variations
+        dictionary.put("customers", 4300);  // Plural form
+        dictionary.put("account", 4000);    // High frequency for account variations
+        dictionary.put("accounts", 3800);   // Plural form
+        dictionary.put("effective", 3500);  // High frequency for "efective" correction
+        dictionary.put("draft", 3000);      // High frequency for "drafft" correction
+        dictionary.put("status", 3500);     // High frequency for status variations
+        dictionary.put("date", 4000);       // Should stay as "date", not "data"
         
         // Add common contractions
         dictionary.put("i'm", 4000);
