@@ -6,7 +6,7 @@ import java.util.stream.Collectors;
 
 public class SpellChecker {
     private Map<String, Integer> dictionary;
-    private static final int MAX_EDIT_DISTANCE = 2;
+    private static final int MAX_EDIT_DISTANCE = 3;
     
     public SpellChecker() {
         dictionary = new HashMap<>();
@@ -64,7 +64,10 @@ public class SpellChecker {
             "receive", "believe", "achieve", "piece", "their", "there", "they're",
             "separate", "definitely", "beginning", "beautiful", "necessary",
             "embarrass", "occurring", "recommend", "disappear", "tomorrow",
-            "weird", "friend", "business", "really", "until", "immediately"
+            "weird", "friend", "business", "really", "until", "immediately",
+            "sophisticated", "my", "name", "am", "people", "person", "because",
+            "between", "important", "example", "government", "company", "system",
+            "program", "question", "number", "public", "information", "development"
         };
         
         for (String word : commonWords) {
