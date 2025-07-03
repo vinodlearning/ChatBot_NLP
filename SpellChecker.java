@@ -109,7 +109,7 @@ public class SpellChecker {
         dictionary.put("info", 4500);       // High frequency for "infro" correction
         dictionary.put("after", 4000);      // High frequency for "aftr" correction
         dictionary.put("last", 3500);       // High frequency for "lst" correction
-        dictionary.put("between", 3000);    // High frequency for "btwn" correction
+        dictionary.put("between", 6000);    // Very high frequency for "btwn" correction
         dictionary.put("created", 3500);    // High frequency for "creatd" correction
         dictionary.put("vinod", 2000);      // Proper name - lower frequency but present
         
@@ -232,6 +232,38 @@ public class SpellChecker {
                 if (!word.equals(originalWord)) {
                     System.out.println("Corrected: " + originalWord + " -> " + word);
                 }
+                correctedText.append(" ");
+                continue;
+            }
+            
+            // Handle common abbreviations
+            String lowerWord = word.toLowerCase();
+            String replacement = null;
+            switch (lowerWord) {
+                case "btwn":
+                    replacement = "between";
+                    break;
+                case "w/":
+                case "w":
+                    replacement = "with";
+                    break;
+                case "b/w":
+                    replacement = "between";
+                    break;
+                case "thru":
+                    replacement = "through";
+                    break;
+                case "yr":
+                    replacement = "year";
+                    break;
+                case "mth":
+                    replacement = "month";
+                    break;
+            }
+            
+            if (replacement != null) {
+                correctedText.append(replacement);
+                System.out.println("Corrected: " + originalWord + " -> " + replacement);
                 correctedText.append(" ");
                 continue;
             }
