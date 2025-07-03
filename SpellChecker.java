@@ -80,7 +80,16 @@ public class SpellChecker {
             "info", "information", "metadata", "after", "before", "under", "all",
             "project", "type", "price", "list", "corporate", "opportunity", "code",
             "fields", "last", "details", "fields", "boeing", "siemens", "mary",
-            "honeywel", "honeywell", "jan", "june", "january", "vinod"
+            "honeywel", "honeywell", "jan", "june", "january", "vinod",
+            "part", "parts", "product", "products", "specifications", "datasheet",
+            "compatible", "available", "stock", "discontinued", "active", "provide",
+            "manufacturer", "issues", "defects", "warranty", "period", "lead", "time",
+            "validation", "failed", "passed", "missing", "rejected", "loaded", "loading",
+            "pricing", "mismatch", "master", "data", "skipped", "successful", "cost",
+            "error", "errors", "happened", "during", "today", "added", "what", "are",
+            "check", "because", "why", "how", "many", "where", "when", "who", "any",
+            "showing", "me", "due", "while", "not", "in", "on", "details", "status",
+            "happen", "all", "get", "that", "then", "stock", "skipped", "passed"
         };
         
         for (String word : commonWords) {
@@ -113,16 +122,52 @@ public class SpellChecker {
         dictionary.put("created", 3500);    // High frequency for "creatd" correction
         dictionary.put("vinod", 2000);      // Proper name - lower frequency but present
         
+        // Parts management terms - high frequency
+        dictionary.put("part", 4000);       // High frequency for "part" preservation
+        dictionary.put("parts", 5500);     // Higher frequency for "prts" correction (prefer plural)
+        dictionary.put("product", 4500);   // High frequency for "prduct" correction
+        dictionary.put("list", 4200);      // High frequency for "lst" correction (over "last")
+        dictionary.put("what", 5500);      // Very high frequency for "wat" correction
+        dictionary.put("are", 5200);       // Very high frequency for "r" correction
+        dictionary.put("provide", 4000);   // High frequency for "provid" correction
+        dictionary.put("datasheet", 3500); // High frequency for "datashet" correction
+        dictionary.put("compatible", 3000); // High frequency for "compatble" correction
+        dictionary.put("available", 3200); // High frequency for "avalable" correction
+        dictionary.put("discontinued", 2800); // High frequency for "discontnued" correction
+        dictionary.put("specifications", 2500); // High frequency for "specifcations" correction
+        dictionary.put("failed", 3800);    // High frequency for "faild" correction
+        dictionary.put("validation", 2200); // High frequency for validation terms
+        dictionary.put("loaded", 2800);    // High frequency for loading terms
+        dictionary.put("manufacturer", 2000); // High frequency for "manufacterer" correction
+        dictionary.put("showing", 3000);   // High frequency for "showing" preservation
+        dictionary.put("me", 4500);        // High frequency for "mee" correction
+        dictionary.put("not", 5000);       // High frequency for "nt" correction
+        dictionary.put("added", 3500);     // High frequency for "addedd" correction
+        dictionary.put("pricing", 3000);   // High frequency for "pricng" correction
+        dictionary.put("because", 3800);   // High frequency for "becasue" correction
+        dictionary.put("details", 3500);   // High frequency for "detalis" correction
+        dictionary.put("happen", 3000);    // High frequency for "happen" preservation
+        dictionary.put("successful", 2800); // High frequency for "successfull" correction
+        
         // Add common contractions
         dictionary.put("i'm", 4000);
         dictionary.put("don't", 3000);
         dictionary.put("can't", 3000);
         dictionary.put("won't", 3000);
         dictionary.put("it's", 3000);
+        dictionary.put("who's", 3500);  // High frequency for parts queries
+        dictionary.put("any", 4500);    // High frequency word
         
         // Add common abbreviations
         dictionary.put("no", 2500);          // For "number"
         dictionary.put("acc", 2000);         // For "account"
+        
+        // Add common part numbers
+        dictionary.put("ae125", 3000);       // Part number
+        dictionary.put("ae126", 3000);       // Part number
+        dictionary.put("ae127", 3000);       // Part number
+        dictionary.put("ae128", 3000);       // Part number
+        dictionary.put("ae129", 3000);       // Part number
         
         System.out.println("Basic dictionary created with " + commonWords.length + " words.");
     }
@@ -236,6 +281,15 @@ public class SpellChecker {
                 continue;
             }
             
+            // Handle contractions with apostrophes - preserve them as-is
+            if (word.toLowerCase().equals("who's") || word.toLowerCase().equals("it's") || 
+                word.toLowerCase().equals("i'm") || word.toLowerCase().equals("don't") ||
+                word.toLowerCase().equals("can't") || word.toLowerCase().equals("won't")) {
+                correctedText.append(word);
+                correctedText.append(" ");
+                continue;
+            }
+            
             // Handle common abbreviations
             String lowerWord = word.toLowerCase();
             String replacement = null;
@@ -259,6 +313,52 @@ public class SpellChecker {
                 case "mth":
                     replacement = "month";
                     break;
+                case "lst":
+                    replacement = "list";
+                    break;
+                case "prts":
+                case "parst":
+                    replacement = "parts";
+                    break;
+                case "wat":
+                    replacement = "what";
+                    break;
+                case "r":
+                    replacement = "are";
+                    break;
+                case "yu":
+                    replacement = "you";
+                    break;
+                case "nt":
+                    replacement = "not";
+                    break;
+                case "hw":
+                    replacement = "how";
+                    break;
+                case "shw":
+                    replacement = "show";
+                    break;
+                case "chek":
+                    replacement = "check";
+                    break;
+                case "filde":
+                    replacement = "failed";
+                    break;
+                case "partz":
+                    replacement = "parts";
+                    break;
+                case "faild":
+                    replacement = "failed";
+                    break;
+                case "ae125":
+                case "ae126":
+                case "ae127":
+                case "ae128":
+                case "ae129":
+                    // Keep part numbers as is
+                    correctedText.append(word);
+                    correctedText.append(" ");
+                    continue;
             }
             
             if (replacement != null) {
@@ -279,6 +379,13 @@ public class SpellChecker {
             
             // Skip likely proper names (capitalized words that aren't at sentence start)
             if (Character.isUpperCase(cleanWord.charAt(0)) && !isFirstWordOfSentence(word, correctedText.toString())) {
+                correctedText.append(word);
+                correctedText.append(" ");
+                continue;
+            }
+            
+            // Skip part numbers that start with AE, 123, etc.
+            if (cleanWord.toLowerCase().matches("^ae\\d+$") || cleanWord.matches("^\\d+$")) {
                 correctedText.append(word);
                 correctedText.append(" ");
                 continue;
